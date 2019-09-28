@@ -285,6 +285,7 @@ public:
     // This also allows devices with wide-color displays that don't
     // want to support color management to disable color management.
     static bool hasWideColorDisplay;
+    friend class ExSurfaceFlinger;
 
     static int primaryDisplayOrientation;
 
@@ -325,6 +326,8 @@ public:
     // Obtains a name from the texture pool, or, if the pool is empty, posts a
     // synchronous message to the main thread to obtain one on the fly
     uint32_t getNewTexture();
+
+    virtual bool IsHWCDisabled() { return false; }
 
     // utility function to delete a texture on the main thread
     void deleteTextureAsync(uint32_t texture);
@@ -422,9 +425,10 @@ private:
     virtual sp<IDisplayEventConnection> createDisplayEventConnection(
             ISurfaceComposer::VsyncSource vsyncSource = eVsyncSourceApp);
     virtual status_t captureScreen(const sp<IBinder>& display, sp<GraphicBuffer>* outBuffer,
+                                   bool& outCapturedSecureLayers,
                                    Rect sourceCrop, uint32_t reqWidth, uint32_t reqHeight,
                                    int32_t minLayerZ, int32_t maxLayerZ, bool useIdentityTransform,
-                                   ISurfaceComposer::Rotation rotation);
+                                   ISurfaceComposer::Rotation rotation, bool captureSecureLayers);
     virtual status_t captureLayers(const sp<IBinder>& parentHandle, sp<GraphicBuffer>* outBuffer,
                                    const Rect& sourceCrop, float frameScale, bool childrenOnly);
     virtual status_t getDisplayStats(const sp<IBinder>& display,
@@ -466,6 +470,12 @@ private:
     void onHotplugReceived(int32_t sequenceId, hwc2_display_t display,
                            HWC2::Connection connection) override;
     void onRefreshReceived(int32_t sequenceId, hwc2_display_t display) override;
+
+    /* ------------------------------------------------------------------------
+     * Extensions
+     */
+    virtual void handleDPTransactionIfNeeded(
+                     const Vector<DisplayState>& /*displays*/) { }
 
     /* ------------------------------------------------------------------------
      * Message handling
@@ -577,11 +587,11 @@ private:
                                 bool yswap, bool useIdentityTransform);
     status_t captureScreenCommon(RenderArea& renderArea, TraverseLayersFunction traverseLayers,
                                  sp<GraphicBuffer>* outBuffer,
-                                 bool useIdentityTransform);
+                                 bool useIdentityTransform, bool& outCapturedSecureLayers);
     status_t captureScreenImplLocked(const RenderArea& renderArea,
                                      TraverseLayersFunction traverseLayers,
                                      ANativeWindowBuffer* buffer, bool useIdentityTransform,
-                                     bool forSystem, int* outSyncFd);
+                                     bool forSystem, int* outSyncFd, bool& outCapturedSecureLayers);
     void traverseLayersInDisplay(const sp<const DisplayDevice>& display, int32_t minLayerZ,
                                  int32_t maxLayerZ, const LayerVector::Visitor& visitor);
 
