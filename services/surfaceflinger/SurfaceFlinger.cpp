@@ -3249,16 +3249,10 @@ status_t SurfaceFlinger::addClientLayer(const sp<Client>& client, const sp<IBind
     return NO_ERROR;
 }
 
-status_t SurfaceFlinger::removeLayer(const sp<Layer>& layer, bool topLevelOnly) {
-    Mutex::Autolock _l(mStateLock);
-    return removeLayerLocked(mStateLock, layer, topLevelOnly);
-}
-
-status_t SurfaceFlinger::removeLayerFromMap(Layer* layer) {
+status_t SurfaceFlinger::removeLayerFromMap(const wp<Layer>& layer) {
     auto it = mLayersByLocalBinderToken.begin();
     while (it != mLayersByLocalBinderToken.end()) {
-        auto strongRef = it->second.promote();
-        if (strongRef != nullptr && strongRef.get() == layer) {
+        if (it->second == layer) {
             it = mLayersByLocalBinderToken.erase(it);
             break;
         } else {
@@ -3270,6 +3264,11 @@ status_t SurfaceFlinger::removeLayerFromMap(Layer* layer) {
         return BAD_VALUE;
     }
     return NO_ERROR;
+}
+
+status_t SurfaceFlinger::removeLayer(const sp<Layer>& layer, bool topLevelOnly) {
+    Mutex::Autolock _l(mStateLock);
+    return removeLayerLocked(mStateLock, layer, topLevelOnly);
 }
 
 status_t SurfaceFlinger::removeLayerLocked(const Mutex&, const sp<Layer>& layer,
@@ -3517,8 +3516,8 @@ uint32_t SurfaceFlinger::setClientStateLocked(const ComposerState& composerState
     const layer_state_t& s = composerState.state;
     sp<Client> client(static_cast<Client*>(composerState.client.get()));
 
-    sp<Layer> layer(client->getLayerUser(s.surface));
-    if (layer == nullptr) {
+    sp<Layer> layer = fromHandle(s.surface);
+    if (layer == nullptr || !(client->isAttached(s.surface))) {
         return 0;
     }
 
@@ -3693,8 +3692,8 @@ void SurfaceFlinger::setDestroyStateLocked(const ComposerState& composerState) {
     const layer_state_t& state = composerState.state;
     sp<Client> client(static_cast<Client*>(composerState.client.get()));
 
-    sp<Layer> layer(client->getLayerUser(state.surface));
-    if (layer == nullptr) {
+    sp<Layer> layer = fromHandle(state.surface);
+    if (layer == nullptr || !(client->isAttached(state.surface))) {
         return;
     }
 
@@ -3844,15 +3843,35 @@ status_t SurfaceFlinger::createContainerLayer(const sp<Client>& client,
     return NO_ERROR;
 }
 
+status_t SurfaceFlinger::clearLayerFrameStats(const sp<const Client>& client, const sp<IBinder>& handle) {
+    Mutex::Autolock _l(mStateLock);
+    sp<Layer> layer = fromHandle(handle);
+    if (layer == nullptr || !(client->isAttached(handle))) {
+        return NAME_NOT_FOUND;
+    }
+    layer->clearFrameStats();
+    return NO_ERROR;
+}
+
+status_t SurfaceFlinger::getLayerFrameStats(const sp<const Client>& client, const sp<IBinder>& handle, FrameStats* outStats) {
+    Mutex::Autolock _l(mStateLock);
+    sp<Layer> layer = fromHandle(handle);
+    if (layer == nullptr || !(client->isAttached(handle))) {
+        return NAME_NOT_FOUND;
+    }
+    layer->getFrameStats(outStats);
+    return NO_ERROR;
+}
 
 status_t SurfaceFlinger::onLayerRemoved(const sp<Client>& client, const sp<IBinder>& handle)
 {
+    Mutex::Autolock _l(mStateLock);
     // called by a client when it wants to remove a Layer
     status_t err = NO_ERROR;
-    sp<Layer> l(client->getLayerUser(handle));
-    if (l != nullptr) {
+    sp<Layer> l = fromHandle(handle);
+    if (l != nullptr || client->isAttached(handle)) {
         mInterceptor->saveSurfaceDeletion(l);
-        err = removeLayer(l);
+        err = removeLayerLocked(mStateLock, l);
         ALOGE_IF(err<0 && err != NAME_NOT_FOUND,
                 "error removing layer=%p (%s)", l.get(), strerror(-err));
     }
@@ -3861,15 +3880,18 @@ status_t SurfaceFlinger::onLayerRemoved(const sp<Client>& client, const sp<IBind
 
 status_t SurfaceFlinger::onLayerDestroyed(const wp<Layer>& layer)
 {
+    Mutex::Autolock _l(mStateLock);
     // called by ~LayerCleaner() when all references to the IBinder (handle)
     // are gone
     sp<Layer> l = layer.promote();
     if (l == nullptr) {
+        removeLayerFromMap(layer);
         // The layer has already been removed, carry on
         return NO_ERROR;
     }
+    removeLayerFromMap(layer);
     // If we have a parent, then we can continue to live as long as it does.
-    return removeLayer(l, true);
+    return removeLayerLocked(mStateLock, l, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -5342,6 +5364,8 @@ void SurfaceFlinger::traverseLayersInDisplay(const sp<const DisplayDevice>& hw, 
 }
 
 sp<Layer> SurfaceFlinger::fromHandle(const sp<IBinder>& handle) {
+    if (!handle) return nullptr;
+
     BBinder *b = handle->localBinder();
     if (b == nullptr) {
         return nullptr;
